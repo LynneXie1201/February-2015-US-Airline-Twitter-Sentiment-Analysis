@@ -1,0 +1,544 @@
+---
+title: "February 2015 US Airline Twitter Sentiment Analysis"
+author: "Yilin Xie - 250722581"
+header-includes: 
+- \usepackage{graphicx}
+- \usepackage{float}
+output: pdf_document
+fig_caption: yes
+latex_engine: pdflatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  #fig.width=12, 
+ # fig.height=3, 
+  echo = FALSE, fig.pos = "H", results = 'asis', message=FALSE)
+library(dplyr)
+library(tidytext)
+library(RColorBrewer)
+library(ggplot2)
+options(xtable.comment = FALSE)
+library(wordcloud)
+library(plyr)
+library(xtable)
+library(tidyr)
+library(tm)
+library(tm)
+library(RTextTools)
+library(e1071)
+library(dplyr)
+library(caret)
+library(magrittr)
+library(doMC)
+library(knitr)
+library(xtable)
+registerDoMC(cores=detectCores())
+options(warn=-1)
+
+# set up for accuarcy comparison
+ACC <- numeric(4)
+names(ACC) <- c(" NB/e1071", "SVM","Tree","MAXENT")
+
+
+# read data
+tweets <- read.csv('/Users/lynne/Desktop/tweets/Tweets.csv')
+
+tweets_new <- tweets %>% select(tweet_id, airline_sentiment, airline, text)
+# rename as sentiment
+tweets_new <- dplyr::rename(tweets_new, sentiment = airline_sentiment)
+```
+
+
+## Introduction
+
+We will focus on the sentiment analysis of the tweets about the six major U.S. airlines. The data was scraped from February of 2015 and contributors were asked to classify positive, negative, and neutral tweets, followed by categorizing negative reasons (such as "late flight" or "rude service"). Through the exploratory analysis and sentiment analysis process, we were able to understand the key features of the positive and negative tweets about the six major U.S. airlines, and revealed some interesting findings. We then applied the classification algorithms learned in class to categorize sentiments by analyzing texts and compared the prediction performance among all these methods by looking at accuracy.
+
+## Data Description
+
+This data originally came from Crowdflower's Data for Everyone library (CrowdFlower, 2015). The data we downloaded from Kaggle is a slightly reformatted version of the original source. The original data set consists of 14640 rows and 15 columns, here are some sample rows of the data set:
+
+```{r datadescp}
+set.seed(12)
+kable(tweets[sample(nrow(tweets), 4), 1:3], caption = "Columns 1-3 of the sample data set")
+set.seed(12)
+kable(tweets[sample(nrow(tweets), 4), 4:6], caption = "Columns 4-6 of the sample data set")
+set.seed(12)
+kable(tweets[sample(nrow(tweets), 4), 7:9], caption = "Columns 7-9 of the sample data set")
+set.seed(12)
+kable(tweets[sample(nrow(tweets), 4), 10:12], caption = "Columns 10-12 of the sample data set")
+set.seed(12)
+kable(tweets[sample(nrow(tweets), 4), 13:15], caption = "Columns 13-15 of the sample data set")
+
+```
+
+Since we focused on the sentiment analysis, we will keep only four columns: tweet_id, airline, airline_sentiment and text. We renamed the airline_sentiment as sentiment for simplification:
+
+* tweet_id: 18 digit identical number
+* airline: one of the six major airlines (American/Delta/Southwest/United/US Airways/Virgin America)
+* sentiment: negative/neutral/positive
+* text: contents of tweets
+
+Here are some random sample rows of the new data set:
+
+```{r desp}
+set.seed(1)
+kable(tweets_new[sample(nrow(tweets_new), 4), 1:2], caption = "Random sample rows of the new data set (col1-2)")
+set.seed(1)
+kable(tweets_new[sample(nrow(tweets_new), 4), 3:4], caption = "Random sample rows of the new data set (col3-4)")
+```
+
+
+## Data Preparation
+
+We noticed that the airlines labeled “Delta” do not match the text associated with them, which always included “@JetBlue” in the texts. 
+
+```{r delta}
+tweets_new %>% filter(airline == "Delta") %>% sample_n(5) %>% kable(caption = "Sample rows for Delta airline")
+```
+
+Thus, we changed all the “Delta” to “JetBlue”. Then we are ready for the tokenization process. Tokenization is the process of splitting text into tokens. For tidy text mining, the token that is stored in each row is most often a single word, but can also be an n-gram, sentence, or paragraph. In the **tidytext** package, we provide functionality to tokenize by commonly used units of text like these and convert to a one-term-per-row format. Within our tidy text framework, we need to both break the text into individual tokens and transform it to a tidy data structure. To do this, we use **tidytext**’s **unnest_tokens()** function. After using **unnest_tokens**, we have split each row so that there is one token (word) in each row of the new data frame; the default tokenization in **unnest_tokens()** is for single words, as shown here. Also notice:
+  
+* Punctuation has been stripped
+* Other columns are still retained
+* By default, **unnest_tokens()** converts the tokens to lowercase
+
+Often in text analysis, we will want to remove stop words; stop words are words that are not useful for an analysis, typically extremely common words such as “the”, “of”, “to”, and so forth in English. We first created a data frame of customized stop words and remove stop words with the function **anti_join()**. Here are some sample rows of the tokenized data set after removing stop words:
+
+
+
+```{r dataprep}
+
+# tockenize
+tweets_new$text <- as.character(tweets_new$text)
+
+tweets_token <- tweets_new %>%
+  unnest_tokens(word, text)
+
+#head(tweets_token)
+
+# remove stopwords in the text
+custom_stop_words <- tibble(word = c("1","2","3","4","5","6",'7','8','9','0',
+                                     "amp", "get","but", "now", "do", "been","out","up","our","they","i'm",
+                                     "us","what","when","how","if","all","thank", "flight","flights",
+                                     "to", "the","i", "a", "you", "for", "on", "and", "is", "are", "am", 
+                                     "my", "in", "it", "me", "of", "was", "your", "so","with", "at", "just", "this",
+                                     "http", "t.co", "have", "that", "be", "from", "will", "we", "an", "can",
+                                     "or","it's","as","one","has","by","there","would","could","about","got",
+                                     "i've","then","u","had","were","going"), 
+                            lexicon = c("custom"))
+
+
+
+tweets_token <- tweets_token %>%
+  anti_join(custom_stop_words)
+
+set.seed(12)
+tweets_token %>% sample_n(10) %>% kable(caption = "Sample rows of the tokenized data set after removing stop words")
+
+```
+
+
+
+## Exploratory Data Analysis
+
+1. Word Frequencies  
+
+    A common task in text mining is to look at word frequencies, and thus we plot the word frequencies in Figure 1. The airline names appeared in the top because the tweets always contain hashtags of these six airlines. The other most used words can give us a brief idea of what people were talking about these six airlines on twitter.
+
+
+```{r 1, fig.height=4,fig.cap="\\label{fig:figs}Top 15 words with highest frequencies"}
+
+# word frequency graph
+tweets_token %>%
+  dplyr::count(word, sort = TRUE) %>%
+  filter(n > 640) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n)) +
+  geom_col() +
+  xlab(NULL) +
+  coord_flip()
+
+```
+
+2. Sentiments Summary
+
+    As we can see from the summary of airline sentiment (Figure 2), negative tweets are higher than others. That indicates people tend to tweet more in negative issues.
+```{r 1.2}
+# sentiment summary: table
+#kable(summary(tweets_new$sentiment),col.names="counts", caption = "Summary of airline sentiment ")
+```
+
+
+```{r 2, fig.cap="\\label{fig:figs}Sentiments summary for all tweets"}
+
+df <- data.frame("sentiment" = c("negative", "nertral","positive"), "tweets" = c(9178,3099,2363))
+ggplot(df, aes(x = sentiment , y = tweets, fill = sentiment)) +
+  geom_col() +
+  scale_fill_brewer(palette="Pastel2") +  theme(legend.position = "none")
+```
+
+3. Visualization of sentiments for each of six airlines
+
+    We then checked sentiments for each airline in Figure 3. Although negative sentiments generally are more than neutral and positive sentiments across all the airlines, United, US Airways and American Air substantially get the most negative tweets. And we noticed that data size for Virgin America is quite small compared to the other five airlines.
+
+```{r 3, fig.cap="\\label{fig:figs}Sentiments summary for each of six airlines"}
+# Visualization of sentiments for each of six airlines
+ggplot(tweets_new, aes(x = sentiment, fill = sentiment)) +
+  geom_bar() +
+  facet_grid(. ~ airline) +
+  theme(axis.text.x = element_text(angle=65, vjust=0.6),
+        plot.margin = unit(c(3,0,3,0), "cm")) + theme(legend.position = "none")
+```
+
+
+4. Top 15 positive words in all tweets 
+
+    From the top 15 positive words from all the tweets (Figure 4),  we could see that JetBlue and Southwest Air received most positive words other than the word “thanks”. This could indicate that customers tweet more positive texts for them. 
+
+```{r 3.5}
+# positive words
+tweets_positive <- tweets_token %>% 
+  filter(sentiment == "positive")
+
+
+# top 15 positive words in tweets
+getPalette = colorRampPalette(brewer.pal(6, "Set1"))
+```
+
+```{r 4,fig.height=4, fig.cap="\\label{fig:figs}Top 15 positive words in all tweets"}
+tweets_positive %>% 
+  dplyr::count(word, sort = TRUE) %>% top_n(15) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(x = word, y = n)) +
+  geom_col(fill = getPalette(15)) +
+  coord_flip()
+```
+
+
+5. Top 15 negative words in all the tweets
+
+    In Figure 5, we see that the top three words are “united”, “usairways” and “americanair”, which cross validated our findings in the previous visualization of sentiments for six airlines. Keep in mind that tokenization process converts the tokens to lowercase by default.
+
+```{r 4.5}
+# negative words
+tweets_negative <- tweets_token %>% 
+  filter(sentiment == "negative")
+
+# top 15 words in negative sentiment
+getPalette = colorRampPalette(brewer.pal(2, "Set1"))
+```
+
+```{r 5, fig.height=4, fig.cap="\\label{fig:figs}Top 15 negative words in all tweets"}
+tweets_negative %>% dplyr::count(word, sort = TRUE) %>% top_n(15) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(x = word, y = n)) +
+  geom_col(fill = getPalette(15)) +
+  coord_flip()
+```
+
+6.	Word clouds of positive and negative words
+
+    We then consider the **wordcloud** package, which uses base R graphics. Let’s look at the most common positive and negative words across all tweets as a whole again, but this time as a word cloud in Figure 6 and Figure 7. The similar observations are found in the word clouds as well.
+
+```{r 6.1, fig.cap="\\label{fig:figs}Word cloud of the most common positive words"}
+# positive wordcloud
+set.seed(1)
+tweets_positive %>% dplyr::count(word) %>%
+  with(wordcloud(word, n, max.words = 80, colors=3))
+```
+
+```{r 6.2, fig.cap="\\label{fig:figs}Word cloud of the most common negative words"}
+# negative wordcloud
+set.seed(1)
+tweets_negative %>% dplyr::count(word) %>%
+  with(wordcloud(word, n, max.words = 80, colors=2))
+```
+
+
+
+## Sentiment analysis with dictionary-based method
+
+Let’s address the topic of opinion mining or sentiment analysis. When human readers approach a text, we use our understanding of the emotional intent of words to infer whether a section of text is positive or negative, or perhaps characterized by some other more nuanced emotion like surprise or disgust. We can use the tools of text mining to approach the emotional content of text programmatically (Silge & Robinson, 2017).
+
+There are a variety of methods and dictionaries that exist for evaluating the opinion or emotion in text. The **tidytext** package contains several sentiment lexicons in the **sentiments** dataset.The three general-purpose lexicons are:
+  
+* **AFINN** from Finn Årup Nielsen
+* **bing** from Bing Liu and collaborators
+*	**nrc** from Saif Mohammad and Peter Turney
+
+All three of these lexicons are based on unigrams, i.e., single words. These lexicons contain many English words and the words are assigned scores for positive/negative sentiment, and also possibly emotions like joy, anger, sadness, and so forth. In our project, we will use the **bing** lexicon, which categorizes words in a binary fashion into positive and negative categories.
+
+```{r 7}
+kable(get_sentiments("bing")[sample(nrow(get_sentiments("bing")), 10), ], caption="Sample rows of the bing lexicon")
+
+```
+
+With our data already in a tidy format, sentiment analysis can be done as an inner join with the **bing** lexicon. Much as removing stop words is an anti join operation, performing sentiment analysis is an inner join operation.
+
+Let’s first look at the words with a positive sentiment from the **bing** lexicon. What are the top 15 positive words in all tweets this time? As can be seen from Figure 8, all the airline names were gone, this is because of the inner join operation. From the top positive words, we could see the descriptions for the service customers received and the reasons why customers were tweeting positive feedbacks.
+
+
+```{r 8}
+bing_positive <- get_sentiments("bing") %>% 
+  filter(sentiment == "positive")
+
+bing_negative <- get_sentiments("bing") %>% 
+  filter(sentiment == "negative")
+
+# top 15 positive words in tweets inner join with bing
+getPalette = colorRampPalette(brewer.pal(6, "Set2"))
+```
+
+```{r 9, fig.height=4, fig.cap="\\label{fig:figs}Top 15 positive words in tweets inner join with bing lexicon"}
+tweets_positive %>% 
+  inner_join(bing_positive) %>%
+  dplyr::count(word, sort = TRUE) %>% top_n(15) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(x = word, y = n)) +
+  geom_col(fill = getPalette(15)) +
+  coord_flip()
+```
+
+Similarly, let’s then take a look at the words with a negative sentiment from the bing lexicon inner join with the words in all tweets (Figure 9). Clearly this time we could understand the reasons why customers were giving out negative feedbacks: “delayed”, “stuck”, “missed”, “lost” are the top negative sentiment words, and “worst”, “disappointed”, “terrible”, “ridiculous” also described how customers felt about the services.
+
+```{r 10, fig.height=4, fig.cap="\\label{fig:figs}Top 20 negative words in tweets inner join with bing lexicon"}
+# top 15 negative words in tweets inner join with bing
+getPalette = colorRampPalette(brewer.pal(4, "Set2"))
+
+tweets_negative %>% 
+  inner_join(bing_negative) %>%
+  dplyr::count(word, sort = TRUE) %>% top_n(20) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(x = word, y = n)) +
+  geom_col(fill = getPalette(20)) +
+  coord_flip()
+```
+
+
+Particularly, we want to know for each airline, what are the top positive words and negative words and then we could easily do the comparison (Figure 10, 11). As can be observed, “great” is the most frequent positive word across all the airlines; “free” appeared only in the airline JetBlue, Southwest and Virgin America, which happened to be the three airlines that received the least negative words. "free" might be one of the reasons why they receive less negative feedbacks. Also noticed that Virgin America is the only airline that has the word “faster”. As for negative words, “delayed” is absolutely the number one negative word received across all the airlines, and United and US Airways got the most complaints about “delayed” flights.
+
+```{r 11, fig.height=8,fig.width=15,fig.cap="\\label{fig:figs}Top positive words for each airline"}
+tweets_positive %>% group_by(airline) %>% inner_join(bing_positive) %>% 
+  dplyr::count(airline, word, sort = TRUE) %>% top_n(10) %>%  mutate(word = reorder(word, n)) %>% 
+  ggplot(aes(x = word, y = n,fill=airline)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~airline, ncol = 2, scales = "free_x")
+```
+
+```{r 12, fig.height=8,fig.width=15,fig.cap="\\label{fig:figs}Top negative words for each airline"}
+tweets_negative %>% group_by(airline) %>% inner_join(bing_negative) %>% 
+  dplyr::count(airline, word, sort = TRUE) %>% top_n(10) %>%  mutate(word = reorder(word, n)) %>% 
+  ggplot(aes(x = word, y = n,fill=airline)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~airline, ncol = 2, scales = "free_x")
+```
+
+
+Dictionary-based methods like the ones we are discussing find the total sentiment of a piece of text by adding up the individual sentiment scores for each word in the text. Here, we scored the positive word as +1 and negative word as -1. And we want to calculate total sentiment scores for each airline in Figure 12. Of all six airlines, only Virgin America gets a positive sentiment score. Within the other five airlines, United, US Airways and American Air get least sentiment scores.
+
+```{r 13, fig.height=4, fig.cap="\\label{fig:figs}Sentiment scores for each airline"}
+# score each airline by positive and negative
+airline_score <- tweets_token %>% group_by(airline) %>% inner_join(get_sentiments("bing")) %>%
+  dplyr::count(airline, sentiment) %>% spread(sentiment, n, fill = 0)  %>%
+  mutate(score = positive - negative)
+
+getPalette = colorRampPalette(brewer.pal(10, "Paired"))
+
+ggplot(airline_score, aes(airline, score, fill = airline)) +
+  geom_col(show.legend = FALSE,fill = getPalette(6)) +
+  coord_flip()
+```
+
+
+## Text Classification
+
+Now we would like to classify tweets according to their overall sentiment (positive/neutral/negative). We applied multiple classification algorithms including multinomial Naive Bayes, Support Vector Machine, Classification Tree and "MaxEnt" (Maximum Entropy) species distribution model. We used the bag of words representation and trained classifiers mentioned above on the training data (75%) and test the model’s prediction performance on a hold-out test set (25%).
+
+We first prepared a corpus of all the documents in a data frame. In this approach, we represent each word in a document as a token and each document as a vector of tokens. In addition, for simplicity, we disregard word order and focus only on the number of occurrences of each word i.e., we represent each document as a multi-set ‘bag’ of words.
+
+Next, we clean up the corpus by eliminating numbers, punctuation, white space, and by converting to lower case. In addition, we discard common stop words. Then we represent the bag of words tokens with a document term matrix (DTM). The rows of the DTM correspond to documents in the collection, columns correspond to terms, and its elements are the term frequencies. We use a built-in function from the ‘tm’ package to create the DTM.
+
+Then we created 75:25 partitions of the data frame, corpus and document term matrix for training and test purposes. The DTM contains 38957 features but not all of them will be useful for classification. We reduce the number of features by ignoring words which appear in less than 10 tweets. To do this, we use ‘findFreqTerms’ function to identify the frequent words, we then restrict the DTM to use only the frequent words using the ‘dictionary’ option.
+
+The DTM contains 38957 features but not all of them will be useful for classification. We reduce the number of features by ignoring words which appear in less than ten tweets. To do this, we use **findFreqTerms** function to indentify the frequent words, we then restrict the DTM to use only the frequent words.
+
+
+
+```{r modeling}
+tweet <- read.csv('/Users/lynne/Desktop/tweets/Tweets.csv', stringsAsFactors = FALSE)
+tweets_model <- tweet %>% select(airline_sentiment, text)
+# rename as sentiments
+tweets_model <- dplyr::rename(tweets_model, sentiment = airline_sentiment)
+#str(tweets_model)
+
+
+# randomize the dataset
+set.seed(2)
+tweets_model <- tweets_model[sample(nrow(tweets_model)), ]
+
+#kable(glimpse(tweets_model))
+# convert char to factor for sentiment
+tweets_model$sentiment <- as.factor(tweets_model$sentiment)
+
+# bag of words tockenization
+corpus <- Corpus(VectorSource(tweets_model$text))
+#corpus
+#inspect(corpus[1:3])
+
+# data cleaning
+corpus_clean <- corpus %>%
+  tm_map(content_transformer(tolower)) %>% 
+  tm_map(removePunctuation) %>%
+  tm_map(removeNumbers) %>%
+  tm_map(removeWords, stopwords(kind="en")) %>%
+  tm_map(stripWhitespace)
+
+#corpus_clean
+
+# create document term matrix
+dtm <- DocumentTermMatrix(corpus_clean)
+#inspect(dtm[50:70, 10:15])
+
+
+# create training and test set partition
+# Next, we create 75:25 partitions of the dataframe, corpus and document term matrix for training and testing purposes.
+
+tweets_model_train <- tweets_model[1:10980,]
+tweets_model_test <- tweets_model[10981:14640,]
+
+dtm_train <- dtm[1:10980,]
+dtm_test <- dtm[10981:14640,]
+
+corpus_clean_train <- corpus_clean[1:10980]
+corpus_clean_test <- corpus_clean[10981:14640]
+
+# feature selection
+#kable(dim(dtm_train))
+# We reduce the number of features by ignoring words which appear in less than five reviews.
+tenfreq <- findFreqTerms(dtm_train, 10, Inf) # term appeared in more than 10 tweets
+#length((tenfreq))
+
+dtm_train <- DocumentTermMatrix(corpus_clean_train, control=list(dictionary = tenfreq))
+dtm_test <- DocumentTermMatrix(corpus_clean_test, control=list(dictionary = tenfreq))
+
+#dim(dtm_train)
+#dim(dtm_test)
+
+```
+
+
+
+### Naïve Bayes
+
+Naive Bayes is one of the simplest machine learning algorithms but sometimes the best especially in the text classification because it trades high bias for low variance. Here we used **naiveBayes()** in the package **e1071** to fit a model. We first fit a model on the training set, then check the prediction performance on the test data. The confusion matrix (Table 11) shows that among those texts that were predicted positive, 401 were correctly predicted and 187 were incorrect. Among those were predicted as neutral, 266 were falsely predicted and 500 were correctly predicted. Among those texts that were predicted negative, 1926 were correctly predicted and only 380 were incorrect. Overall accuracy is around 77%. This inidcates somewhat a good prediction performance.
+
+```{r m1}
+# Naive Bayes Algorithm
+convert_count <- function(x) {
+  y <- ifelse(x > 0, 1,0)
+  y <- factor(y, levels=c(0,1), labels=c("No", "Yes"))
+  y
+}
+
+# Apply the convert_count function to get final training and testing DTMs
+train_NB <- apply(dtm_train, 2, convert_count)
+test_NB <- apply(dtm_test, 2, convert_count)
+
+# training NB model
+NB_classifier <- naiveBayes(train_NB, tweets_model_train$sentiment, laplace = 1) 
+
+# predict on test set
+pred_NB <- predict(NB_classifier, newdata=test_NB)
+
+# confusion matrix
+confu_matrix <- confusionMatrix(pred_NB, tweets_model_test$sentiment)
+# accuracy
+ACC[1] <- confu_matrix$overall['Accuracy']
+```
+
+
+  
+```{r m2,results='asis'}
+# table
+tb <- confu_matrix$table
+print(xtable(tb, caption="Confustion table for Naive Bayes"))
+```
+
+
+
+
+  
+### SVM, Tree and MaxEnt
+  
+We also used algorithms in the RTextTools package such as SVM, Tree and MaxEnt. We applied trained models on the test set and compared their accuracy in Figure 13. According to Figure 13, Naive Bayes outperforms the other classification algorithms.
+
+```{r m3}
+# Other algorithms in the RTextTools package: SVM, Random Forest, Bagging, Tree
+
+container = create_container(dtm, as.numeric((tweets_model[,1])),
+                             trainSize=1:10980, testSize=10981:14640,virgin=FALSE)
+
+model_SVM = train_models(container, algorithms="SVM")
+
+model_Tree = train_models(container, algorithms="TREE")
+
+
+model_MAXENT = train_models(container, algorithms="MAXENT")
+
+results_svm = classify_models(container, model_SVM)
+results_tree = classify_models(container, model_Tree)
+results_max = classify_models(container, model_MAXENT)
+
+# accuracy
+ACC[2] <- recall_accuracy(as.numeric(tweets_model[10981:14640, 1]), results_svm[,"SVM_LABEL"])
+ACC[3] <- recall_accuracy(as.numeric(tweets_model[10981:14640, 1]), results_tree[,"TREE_LABEL"])
+ACC[4] <- recall_accuracy(as.numeric(tweets_model[10981:14640, 1]), results_max[,"MAXENTROPY_LABEL"])
+
+```
+
+
+
+```{r m4, fig.height=4, fig.cap="\\label{fig:figs}Accuracy comparisons with 95% C.I. error bars"}
+getPalette = colorRampPalette(brewer.pal(3, "Set2"))
+
+t <- ACC
+ind <- rev(order(t))
+imp <- unlist(t)[ind]
+var <- names(t)[ind]
+tibble(
+  var = ordered(var, levels=var), #need ordered for Pareto
+  imp = imp,
+  moe = 1.96*sqrt(imp*(1-imp)/nrow(tweets_model_test))
+) %>%
+  ggplot(aes(x = var, y = imp)) + 
+  geom_bar(stat = "identity", fill=getPalette(4),width = 0.5) +
+  geom_errorbar(aes(ymin=imp-moe, ymax=imp+moe),
+                width=0.3, colour="red", size=1) +
+  ggtitle("Accuracy Comparisons with 95% C.I. Error Bars") +
+  xlab("Classification Algorithms") +
+  ylab("Accuracy on Testing Data") +
+  coord_flip()
+
+```
+
+
+
+# Conclusion
+
+From the exploratory data analysis, we saw that people tend to tweet more negative feedbacks about the airlines. And among the six major airlines in the U.S., United, US Airways and American Air substantially get the most negative tweets, which suggested that customers are not happy with their experience with these airlines.
+
+And from the sentiment analysis visualizations, we observed that people were complaining the most about "delayed" flights. “free” appeared only in the airline JetBlue, Southwest and Virgin America, which happened to be the three airlines that received the least negative words, and Virgin America is the only airline that received a positive sentiment score.
+
+We approached the text classification using the bag ofwords representation and applied multiple classification algorithms on the training set,  we then compared their prediction performance on the test data by checking the accuracy. And we saw that Naive Bayes clearly has a better performance among all the other methods.
+
+# References
+
+CrowdFlower (2015). *Twitter US Airline Sentiment.* Retrieved from https://www.kaggle.com/crowdflower/twitter-airline-sentiment
+
+Silge, J., & Robinson, D. (2017). *Text mining with R: A tidy approach*. "O'Reilly Media, Inc.".
+
+
+  
+
+
